@@ -1,0 +1,224 @@
+#!/usr/bin/perl
+
+use strict;
+use Getopt::Long;
+use utf8;
+my $version = "1.0";
+
+my %opt = ();
+
+GetOptions(
+    \%opt,              "sql-type=s",      "only-dml",         "t|tables=s",
+    "enable-drop",      "enable-truncate", "f|binlog=s",       "help",
+    'start-datetime=s', 'stop-datetime=s', 'start-position=i', 'stop-position=i',
+    'd|databases=s'
+) || die usage();
+
+sub usage {
+    print 'MySQL Binlog to SQL 
+Options:
+    -t, --tables=name           export tables in tablenames, deliminate by comma.
+    -d, --database=name         List entries for just this database (local log only).
+     
+    --start-datetime=name       Start reading the binlog at first event having a datetime
+                                equal or posterior to the argument; the argument must be
+                                a date and time in the local time zone, in any format
+                                accepted by the MySQL server for DATETIME and TIMESTAMP
+                                types, for example: 2004-12-25 11:25:56 (you should
+                                probably use quotes for your shell to set it properly).
+   
+    --start-position=#          Start reading the binlog at position N. Applies to the
+                                first binlog passed on the command line.
+   
+    --stop-datetime=name        Stop reading the binlog at first event having a datetime
+                                equal or posterior to the argument; the argument must be
+                                a date and time in the local time zone, in any format
+                                accepted by the MySQL server for DATETIME and TIMESTAMP
+                                types, for example: 2004-12-25 11:25:56 (you should
+                                probably use quotes for your shell to set it properly).
+
+    --stop-position=#           Stop reading the binlog at position N. Applies to the
+                                last binlog passed on the command line.
+                                
+    --only-dml                  Only print dml sql, optional, default disabled.
+    --sql-type                  Sql type you want to process, support INSERT, UPDATE, DELETE.
+    -f, --binlog=name           Read from binlog file.
+    --help                      Print help message.';
+    print "\n";
+    exit;
+}
+
+if ( defined $opt{'help'} && $opt{'help'} ) {
+    usage();
+}
+
+if ( $opt{'f'} eq "" ) {
+    usage();
+}
+
+my $cmd = qq{mysqlbinlog -vv --base64-output=DECODE-ROWS --skip-gtids};
+
+$cmd .= " --start-position=" . $opt{'start-position'}        if $opt{'start-position'};
+$cmd .= " --stop-position=" . $opt{'stop-position'}          if $opt{'stop-postion'};
+$cmd .= " --start-datetime='" . $opt{'start-datetime'} . "'" if $opt{'start-datetime'};
+$cmd .= " --stop-datetime='" . $opt{'stop-datetime'} . "'"   if $opt{'stop-datetime'};
+$cmd .= " --database=" . $opt{'d'}                           if $opt{'d'};
+$cmd .= " " . $opt{'f'};
+
+print "# use command: $cmd\n";
+
+open( FILE, "$cmd |" ) || die "can not execute mysqlbinlog\n";
+
+my @tables    = split( /,/, $opt{'t'} );
+my @sql_types = map lc, split( /,/, $opt{'sql-type'} );
+my $only_dml  = 0;
+if ( defined $opt{'only-dml'} && $opt{'only-dml'} ) {
+    $only_dml = 1;
+}
+
+#print "@sql_types\n";
+my $block       = "";
+my $line        = "";
+my $end_log_pos = 0;
+my $matchfilter = 0;
+while ( $line = <FILE> ) {
+    if ( $line ne "" ) {
+        if ( $line =~ /^\/\*/ || $line =~ /DELIMITER/ || $line =~ /SET TIMESTAMP=\d+.+/i ) {
+
+            #do nothing
+        }
+        elsif ( $line =~ /^#\d+.+end_log_pos (\d+) .*/ ) {
+
+            #determin end_log_pos
+            $end_log_pos = $1;
+            $block .= $line;
+        }
+        elsif ( $line =~ /# at (\d+)/ || $line =~ /^# End of log file/ ) {
+            if ( ( $end_log_pos == $1 && $matchfilter ) || ( $matchfilter && $line =~ /^# End of log file/ ) ) {
+
+                #meet end_log_pos and print if table matches
+                $block =~ s/\n$//;
+                $block .= ";" . $line;
+                print $block;
+            }
+
+            #clean variables
+            $block       = "";
+            $end_log_pos = 0;
+            $matchfilter = 0;
+        }
+        else {
+            if ( $line =~ /^ *update `[a-z_-]+`\.`?([a-z_]+)`? .+/i || $line =~ /^ *update `?([a-z_]+)`? .+/i ) {
+                $matchfilter = 1;
+
+                #update
+                if (@tables) {
+                    $matchfilter = 0;
+                    if ( $1 ~~ @tables ) {
+                        $matchfilter = 1;
+                    }
+                }
+
+                if ( $matchfilter == 1 ) {
+                    if (@sql_types) {
+                        $matchfilter = 0;
+                        if ( 'update' ~~ @sql_types ) {
+                            $matchfilter = 1;
+                        }
+                    }
+
+                }
+                if ( $matchfilter == 1 ) {
+                    $block .= $line;
+                }
+
+            }
+            elsif ($line =~ /^ *insert into `?[a-z-_]+`?\.`?([a-z_]+)`?\s*.+/i
+                || $line =~ /^ *insert into `?([a-z_]+)`?\s*.+/i )
+            {
+                $matchfilter = 1;
+
+                #insert
+                if (@tables) {
+                    $matchfilter = 0;
+                    if ( $1 ~~ @tables ) {
+                        $matchfilter = 1;
+                    }
+                }
+
+                if ( $matchfilter == 1 ) {
+                    if (@sql_types) {
+                        $matchfilter = 0;
+                        if ( 'insert' ~~ @sql_types ) {
+                            $matchfilter = 1;
+                        }
+                    }
+
+                }
+                if ( $matchfilter == 1 ) {
+                    $block .= $line;
+                }
+            }
+            elsif ($line =~ /^ *delete from `?[a-z_]+`?\.`?([a-z_]+)`?\s*.+/i
+                || $line =~ /^ *delete from `?([a-z_]+)`?\s*.+/i )
+            {
+                $matchfilter = 1;
+
+                #delete
+                if (@tables) {
+                    $matchfilter = 0;
+                    if ( $1 ~~ @tables ) {
+                        $matchfilter = 1;
+                    }
+                }
+
+                if ( $matchfilter == 1 ) {
+                    if (@sql_types) {
+                        $matchfilter = 0;
+                        if ( 'delete' ~~ @sql_types ) {
+                            $matchfilter = 1;
+                        }
+                    }
+                }
+
+                if ( $matchfilter == 1 ) {
+                    $block .= $line;
+                }
+            }
+            elsif ($line =~ /^ *drop table if exists `?([a-z_]+)`?.*/i
+                || $line =~ /^ *drop table `?([a-z_]+)`?.*/i
+                || $line =~ /^ *truncate table `?([a-z_]+)`?.*/i
+                || $line =~ /^ *alter table `?([a-z_]+)`? .+/i
+                || $line =~ /^ *create table `?[a-z_-]+`?\.`?([a-z_]+)`? .+/i
+                || $line =~ /^ *create table `?([a-z_]+)`? .+/i
+                || $line =~ /^ *create (unique index|index) .+ on `?([a-z_]+)`? .+/i
+                || $line =~ /^ *create view .+ from `?([a-z_]+)`? .+/i )
+            {
+                $matchfilter = 1;
+                if (@tables) {
+                    $matchfilter = 0;
+
+                    if ( $1 ~~ @tables ) {
+                        $matchfilter = 1;
+                    }
+                }
+                if ( $matchfilter == 1 ) {
+                    $matchfilter = $only_dml ? 0 : 1;
+                }
+
+                # sql_types不包含这些，只包含insert/update/delete
+                if (@sql_types) {
+                    $matchfilter = 0;
+                }
+                if ( $matchfilter == 1 ) {
+                    $block .= $line;
+                }
+            }
+            else {
+                $block .= $line;
+            }
+        }
+    }
+}
+
+# print "$opt{'t'}-$opt{'tables'}\n";
