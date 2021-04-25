@@ -33,3 +33,8 @@ inc/
 /MANIFEST.bak
 /pm_to_blib
 /*.zip
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
