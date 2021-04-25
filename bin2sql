@@ -96,8 +96,8 @@ while ( $line = <FILE> ) {
         elsif ( $line =~ /# at (\d+)/ || $line =~ /^# End of log file/ ) {
             if ( ( $end_log_pos == $1 && $matchfilter ) || ( $matchfilter && $line =~ /^# End of log file/ ) ) {
 
-                #meet end_log_pos and print if table matches
-                $block =~ s/\n$//;
+                # $block =~ s/\n$//;
+                chomp($block);
                 $block .= ";" . $line;
                 print $block;
             }
