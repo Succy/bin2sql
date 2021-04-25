@@ -4,7 +4,6 @@ use strict;
 use warnings;
 use Getopt::Long;
 use utf8;
-my $version = "1.0";
 
 my %opt = ();
 
@@ -94,8 +93,8 @@ while ($line = <FILE>) {
             $end_log_pos = $1;
             $block .= $line;
         }
-        elsif ($line =~ /# at (\d+)/ || $line =~ /^# End of log file/) {
-            if (($end_log_pos == $1 && $matchfilter) || ($matchfilter && $line =~ /^# End of log file/)) {
+        elsif ($line =~ /# at (\d+)/) {
+            if (($end_log_pos == $1 && $matchfilter)) {
 
                 # $block =~ s/\n$//;
                 chomp($block);
@@ -107,6 +106,15 @@ while ($line = <FILE>) {
             $block = "";
             $end_log_pos = 0;
             $matchfilter = 0;
+        }
+        elsif ($line =~ /^# End of log file/) {
+            # 结束了，直接跳出循环
+            if ($matchfilter) {
+                chomp($block);
+                $block .= ";" . $line;
+                print $block;
+            }
+            last;
         }
         else {
             if ($line =~ /^ *update `[a-z_-]+`\.`?([a-z_]+)`? .+/i || $line =~ /^ *update `?([a-z_]+)`? .+/i) {
