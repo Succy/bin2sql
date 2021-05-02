@@ -1,9 +1,19 @@
 #!/usr/bin/perl
-
+#============================================================================
+#
+# mysql binlog to sql(binlog_format=row)
+# this script contains binlog parse to sql and flashback(only dml)
+# author: Succy<1459307744@qq.com>
+# date: 2021-05-01
+#
+# ===========================================================================
 use strict;
 use warnings;
 use Getopt::Long;
 use utf8;
+use 5.016;
+use DBI;
+use Data::Dumper;
 
 my %opt = ();
 
@@ -52,9 +62,9 @@ if (defined $opt{'help'} && $opt{'help'}) {
     usage();
 }
 
-if ($opt{'f'} eq "") {
-    usage();
-}
+# if ($opt{'f'} eq "") {
+#     usage();
+# }
 
 my $cmd = qq{mysqlbinlog -vv --base64-output=DECODE-ROWS --skip-gtids};
 
@@ -67,7 +77,9 @@ $cmd .= " " . $opt{'f'};
 
 print "# use command: $cmd\n";
 
-open(FILE, "$cmd |") || die "can not execute mysqlbinlog\n";
+my $binlog = "C:\\Users\\Succy\\Desktop\\binlog.sql";
+
+open(FILE, "<$binlog") || die "can not execute mysqlbinlog\n";
 
 my @tables = split(/,/, $opt{'t'});
 my @sql_types = map lc, split(/,/, $opt{'sql-type'});
@@ -75,31 +87,212 @@ my $only_dml = 0;
 if (defined $opt{'only-dml'} && $opt{'only-dml'}) {
     $only_dml = 1;
 }
+# 是否闪回
+my $flashback = 0;
 
 #print "@sql_types\n";
 my $block = "";
 my $line = "";
 my $end_log_pos = 0;
 my $matchfilter = 0;
+
+# db config
+my $db_user = "root";
+my $db_pass = "123456";
+my $db_host = "192.168.3.106";
+my $db_port = 3306;
+my %tb_schema = ();
+
+# 从数据库中获取table的schema信息，赋值给全局变量。避免每条语句都执行，一次性执行获取完
+# 如果有指定表，则获取指定的表的信息即可。
+sub fetch_table_schema {
+    my $dbh = DBI->connect("DBI:mysql:database=information_schema;host=$db_host;port=$db_port", "$db_user", "$db_pass") or die "Unable to connect: $DBI::errstr\n";
+    my $sql = "select column_name, table_name from information_schema.columns where table_schema='demo'";
+    $sql .= " and table_name in(" . (join ',', @tables) . ")" if @tables;
+    $sql .= " order by table_name asc, ordinal_position asc";
+
+    my $sth = $dbh->prepare($sql);
+    $sth->execute();
+    while (my @row = $sth->fetchrow_array()) {
+        my ($col_name, $table_name) = @row;
+        if (exists($tb_schema{$table_name})) {
+            # 使用指针来节约空间
+            my $p_arr = \@{$tb_schema{$table_name}};
+            push @$p_arr, $col_name;
+            $tb_schema{$table_name} = $p_arr;
+        }
+        else {
+            my @arr = ($col_name);
+            $tb_schema{$table_name} = \@arr;
+        }
+    }
+    $sth->finish();
+    $dbh->disconnect();
+}
+&fetch_table_schema;
+
+# 处理SQL文本块，由于binlog解析出来的SQL，当同一个事务受影响有多条的时候，
+# SQL是按照“文本块”的形式出现，因此需要做切分处理
+# todo Perl很强大，只是我水平不行，应该还有更优雅的写法
+sub process_sql_block {
+    my $sql_block = shift;
+    my $flag = 0;
+    my $sql = "";
+    my @arr = split(/\n/, $sql_block);
+    while (my ($index, $elem) = each @arr) {
+        if (@arr == $index + 1 && $flag) {
+            $elem =~ s/^\s+|\s+$//g;
+            $sql .= $elem;
+            chomp $sql;
+            $sql .= "\n";
+            if ($flashback) {
+                &print_flashback_sql($sql);
+            }
+            else {
+                &print_normal_sql($sql);
+            }
+        }
+        if ($elem =~ /^\s*(update|delete|insert|create|drop).*/i) {
+            if ($flag) {
+                chomp $sql;
+                $sql .= "\n";
+                if ($flashback) {
+                    &print_flashback_sql($sql);
+                }
+                else {
+                    &print_normal_sql($sql);
+                }
+                $flag = 0;
+                $sql = "";
+            }
+            $flag = 1;
+            $sql .= $elem . "\n";
+        }
+        elsif ($elem =~ /^#(.+)server .+end_log_pos (\d+) .*/) {
+            print "#$1end_log_pos: $2\n";
+        }
+        else {
+            $sql .= $elem . "\n";
+        }
+    }
+}
+
+# 打印正常的sql
+sub print_normal_sql {
+    my ($sql) = @_;
+    # 按照换行符切割成一个数组，并且去掉前后空格
+    my @sql_split = map {(my $s = $_) =~ s/^\s+|\s+$//g;
+        $s;} split /\n/, $sql;
+    # update 语句需要将WHERE与SET翻转
+    if ($sql =~ /update `?([a-z_-]+)`?\.`?([a-z_]+)`?.*/i) {
+        my $schema = $1;
+        my $tb_name = $2;
+        my @cols = @{$tb_schema{$tb_name}};
+
+        @sql_split = map {(my $x = $_) =~ s/@(\d+)=/`$cols[$1 - 1]`=/g;
+            $x} @sql_split;
+        my $where = join ' AND ', grep {/WHERE/ .. /SET/ and !/WHERE/ and !/SET/} @sql_split;
+        my $set = join ', ', grep {/SET/ .. /$sql_split[$#sql_split]/ and !/SET/} @sql_split;
+        $sql = "UPDATE `$schema`.`$tb_name` SET $set WHERE $where;\n";
+    }
+    # delete语句，需要将WHERE后面的条件加上AND
+    elsif ($sql =~ /delete from `?([a-z_]+)`?\.`?([a-z_]+)`?.*/i) {
+        my $schema = $1;
+        my $tb_name = $2;
+        my @cols = @{$tb_schema{$tb_name}};
+
+        @sql_split = map {(my $x = $_) =~ s/@(\d+)=/`$cols[$1 - 1]`=/g;
+            $x} @sql_split;
+        my $where = join ' AND ', grep {/WHERE/ .. /$sql_split[$#sql_split]/ and !/WHERE/} @sql_split;
+        $sql = "DELETE FROM `$schema`.`$tb_name` WHERE $where;\n";
+    }
+    # insert语句，需要补充values
+    elsif ($sql =~ /insert into `?([a-z_-]+)`?\.`?([a-z_]+)`?\.*/i) {
+        my $schema = $1;
+        my $tb_name = $2;
+        my @cols = @{$tb_schema{$tb_name}};
+
+        @sql_split = map {(my $x = $_) =~ s/@(\d+)=/`$cols[$1 - 1]`=/g;
+            $x} @sql_split;
+        my $values = join ', ', map {(my $x = $_) =~ s/`.+`=//g;
+            $x} grep {/SET/ .. /$sql_split[$#sql_split]/ and !/SET/} @sql_split;
+        $sql = "INSERT INTO `$schema`.`$tb_name` VALUES($values);\n";
+    }
+    else {
+        chomp $sql;
+        $sql .= ";\n";
+    }
+
+    print "$sql";
+}
+
+# 打印闪回SQL语句。能够进行闪回的只有INSERT/UPDATE/DELETE
+sub print_flashback_sql {
+    my ($sql) = @_;
+
+    # 按照换行符切割成一个数组，并且去掉前后空格
+    my @sql_split = map {(my $s = $_) =~ s/^\s+|\s+$//g;
+        $s;} split /\n/, $sql;
+    # update 语句需要将WHERE与SET翻转
+    if ($sql =~ /update `?([a-z_-]+)`?\.`?([a-z_]+)`?.*/i) {
+        my $schema = $1;
+        my $tb_name = $2;
+        my @cols = @{$tb_schema{$tb_name}};
+
+        @sql_split = map {(my $x = $_) =~ s/@(\d+)=/`$cols[$1 - 1]`=/g;
+            $x} @sql_split;
+        my $set = join ', ', grep {/WHERE/ .. /SET/ and !/WHERE/ and !/SET/} @sql_split;
+        my $where = join ' AND ', grep {/SET/ .. /$sql_split[$#sql_split]/ and !/SET/} @sql_split;
+        print "UPDATE `$schema`.`$tb_name` SET $set WHERE $where;\n";
+    }
+    # delete语句，需要将转换成insert语句
+    elsif ($sql =~ /delete from `?([a-z_]+)`?\.`?([a-z_]+)`?.*/i) {
+        my $schema = $1;
+        my $tb_name = $2;
+        my @cols = @{$tb_schema{$tb_name}};
+
+        @sql_split = map {(my $x = $_) =~ s/@(\d+)=/`$cols[$1 - 1]`=/g;
+            $x} @sql_split;
+        my $values = join ', ', map {(my $x = $_) =~ s/`.+`=//g;
+            $x} grep {/WHERE/ .. /$sql_split[$#sql_split]/ and !/WHERE/} @sql_split;
+        print "INSERT INTO `$schema`.`$tb_name` VALUES($values);\n";
+    }
+    # insert语句，需要翻转成delete语句
+    elsif ($sql =~ /insert into `?([a-z_-]+)`?\.`?([a-z_]+)`?\.*/i) {
+        my $schema = $1;
+        my $tb_name = $2;
+        my @cols = @{$tb_schema{$tb_name}};
+
+        @sql_split = map {(my $x = $_) =~ s/@(\d+)=/`$cols[$1 - 1]`=/g;
+            $x} @sql_split;
+        my $where = join ' AND ', grep {/SET/ .. /$sql_split[$#sql_split]/ and !/SET/} @sql_split;
+        print "DELETE FROM `$schema`.`$tb_name` WHERE $where;\n";
+    }
+    else {
+        return;
+    }
+}
+
 while ($line = <FILE>) {
     if ($line ne "") {
-        if ($line =~ /^\/\*/ || $line =~ /DELIMITER/ || $line =~ /SET TIMESTAMP=\d+.+/i) {
-
+        if ($line =~ /^\/\*/ || $line =~ /DELIMITER/ || $line =~ /SET TIMESTAMP=\d+.+/i
+            || $line =~ /SET \@\@SESSION.GTID_NEXT.+/) {
             #do nothing
         }
         elsif ($line =~ /^#\d+.+end_log_pos (\d+) .*/) {
-
             #determin end_log_pos
             $end_log_pos = $1;
             $block .= $line;
         }
         elsif ($line =~ /# at (\d+)/) {
+            # $start_log_pos = $1;
             if (($end_log_pos == $1 && $matchfilter)) {
-
-                # $block =~ s/\n$//;
                 chomp($block);
-                $block .= ";" . $line;
-                print $block;
+                # 去除###
+                $block =~ s/###\s*//g;
+                # 去除后面的/*类型*/
+                $block =~ s/\/\*.*\*\///g;
+                &process_sql_block($block);
             }
 
             #clean variables
@@ -110,14 +303,20 @@ while ($line = <FILE>) {
         elsif ($line =~ /^# End of log file/) {
             # 结束了，直接跳出循环
             if ($matchfilter) {
-                chomp($block);
-                $block .= ";" . $line;
-                print $block;
+                # 去除###
+                $block =~ s/###\s*//g;
+                # 去除后面的/*类型*/
+                $block =~ s/\s*\/\*.*\*\///g;
+                # 方便解析，加多一个换行符
+                chomp $block;
+                $block .= ";\n" . $line;
+                &process_sql_block($block);
             }
             last;
         }
         else {
-            if ($line =~ /^ *update `[a-z_-]+`\.`?([a-z_]+)`? .+/i || $line =~ /^ *update `?([a-z_]+)`? .+/i) {
+            # print $line;
+            if ($line =~ /^### update `[a-z_-]+`\.`?([a-z_]+)`?.*/i) {
                 $matchfilter = 1;
 
                 #update
@@ -135,15 +334,12 @@ while ($line = <FILE>) {
                             $matchfilter = 1;
                         }
                     }
-
                 }
                 if ($matchfilter == 1) {
                     $block .= $line;
                 }
-
             }
-            elsif ($line =~ /^ *insert into `?[a-z-_]+`?\.`?([a-z_]+)`?\s*.+/i
-                || $line =~ /^ *insert into `?([a-z_]+)`?\s*.+/i) {
+            elsif ($line =~ /^### insert into `?[a-z-_]+`?\.`?([a-z_]+)`?\.*/i) {
                 $matchfilter = 1;
 
                 #insert
@@ -161,14 +357,12 @@ while ($line = <FILE>) {
                             $matchfilter = 1;
                         }
                     }
-
                 }
                 if ($matchfilter == 1) {
                     $block .= $line;
                 }
             }
-            elsif ($line =~ /^ *delete from `?[a-z_]+`?\.`?([a-z_]+)`?\s*.+/i
-                || $line =~ /^ *delete from `?([a-z_]+)`?\s*.+/i) {
+            elsif ($line =~ /^### delete from `?[a-z_]+`?\.`?([a-z_]+)`?.*/i) {
                 $matchfilter = 1;
 
                 #delete
