@@ -25,7 +25,8 @@
 + 支持解析指定的databases、指定的tables。
 + 支持指定dml类型，仅支持`INSERT、UPDATE、DELETE`。
 + 支持`only-dml`属性，如果指定该属性，则不会输出dml以外的sql。
-
++ 支持闪回(flashback)
++ 支持获取远端服务器的Binlog
 
 
 ## 安装和配置

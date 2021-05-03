@@ -13,33 +13,35 @@ use Getopt::Long;
 use utf8;
 use 5.016;
 use DBI;
-use Data::Dumper;
 
 my %opt = ();
 
 GetOptions(
-    \%opt, "sql-type=s", "only-dml", "t|tables=s",
-    "enable-drop", "enable-truncate", "f|binlog=s", "help",
+    \%opt, 'sql-type=s', 'only-dml', 't|tables=s', 'f|binlog=s', 'help',
     'start-datetime=s', 'stop-datetime=s', 'start-position=i', 'stop-position=i',
-    'd|databases=s'
+    'd|databases=s', 'u|user=s', 'h|host=s', 'P|port=i', 'p|password:s', 'B|flashback'
 ) || die usage();
 
 sub usage {
-    print 'MySQL Binlog to SQL 
+    print 'MySQL Binlog to SQL
 Options:
-    -t, --tables=name           export tables in tablenames, deliminate by comma.
+    -h, --host=name             Get the binlog from server, default localhost.
+    -u, --user=name             Connect to the remote server as username, default root.
+    -P, --port=#                Port number to use for connection or 3306 for default to.
+    -p, --password[=name]       Password to connect to remote server.
+    -t, --tables=name           Export tables in table names, delimiter by comma.
     -d, --database=name         List entries for just this database (local log only).
-     
+    -B, --flashback             Is print flashback SQL, only DML could be flashback.
     --start-datetime=name       Start reading the binlog at first event having a datetime
                                 equal or posterior to the argument; the argument must be
                                 a date and time in the local time zone, in any format
                                 accepted by the MySQL server for DATETIME and TIMESTAMP
                                 types, for example: 2004-12-25 11:25:56 (you should
                                 probably use quotes for your shell to set it properly).
-   
+
     --start-position=#          Start reading the binlog at position N. Applies to the
                                 first binlog passed on the command line.
-   
+
     --stop-datetime=name        Stop reading the binlog at first event having a datetime
                                 equal or posterior to the argument; the argument must be
                                 a date and time in the local time zone, in any format
@@ -49,7 +51,7 @@ Options:
 
     --stop-position=#           Stop reading the binlog at position N. Applies to the
                                 last binlog passed on the command line.
-                                
+
     --only-dml                  Only print dml sql, optional, default disabled.
     --sql-type                  Sql type you want to process, support INSERT, UPDATE, DELETE.
     -f, --binlog=name           Read from binlog file.
@@ -58,15 +60,29 @@ Options:
     exit;
 }
 
-if (defined $opt{'help'} && $opt{'help'}) {
+if ((defined $opt{'help'} && $opt{'help'})
+    or (!defined $opt{'f'} || $opt{'f'} eq "")
+    or (!defined $opt{'d'} || $opt{'d'} eq "")) {
     usage();
 }
 
-# if ($opt{'f'} eq "") {
-#     usage();
-# }
+# db config
+my $db_pass = "123456";
+if (defined $opt{'p'}) {
+    $db_pass = $opt{'p'};
+    if ($db_pass eq '') {
+        print "Enter Password:";
+        $db_pass = <STDIN>;
+        chomp $db_pass;
+    }
+}
 
-my $cmd = qq{mysqlbinlog -vv --base64-output=DECODE-ROWS --skip-gtids};
+my $db_user = $opt{'u'} && $opt{'u'} ne '' ? $opt{'u'} : "root";
+my $db_host = $opt{'h'} && $opt{'h'} ne '' ? $opt{'h'} : "localhost";
+my $db_port = $opt{'P'} && $opt{'P'} ne '' ? $opt{'P'} : 3306;
+my %tb_schema = ();
+
+my $cmd = qq{mysqlbinlog -vv --base64-output=DECODE-ROWS --skip-gtids -R -u$db_user -h$db_host -P$db_port -p$db_pass};
 
 $cmd .= " --start-position=" . $opt{'start-position'} if $opt{'start-position'};
 $cmd .= " --stop-position=" . $opt{'stop-position'} if $opt{'stop-postion'};
@@ -76,19 +92,13 @@ $cmd .= " --database=" . $opt{'d'} if $opt{'d'};
 $cmd .= " " . $opt{'f'};
 
 print "# use command: $cmd\n";
+open(FILE, "$cmd |") || die "can not execute mysqlbinlog\n";
 
-my $binlog = "C:\\Users\\Succy\\Desktop\\binlog.sql";
-
-open(FILE, "<$binlog") || die "can not execute mysqlbinlog\n";
-
-my @tables = split(/,/, $opt{'t'});
-my @sql_types = map lc, split(/,/, $opt{'sql-type'});
-my $only_dml = 0;
-if (defined $opt{'only-dml'} && $opt{'only-dml'}) {
-    $only_dml = 1;
-}
+my @tables = $opt{'t'} && $opt{'t'} ne '' ? split(/,/, $opt{'t'}) : ();
+my @sql_types = $opt{'sql-type'} && $opt{'sql-type'} ne '' ? map lc, split(/,/, $opt{'sql-type'}) : ();
+my $only_dml = $opt{'only-dml'} ? 1 : 0;
 # 是否闪回
-my $flashback = 0;
+my $flashback = $opt{'B'} ? 1 : 0;
 
 #print "@sql_types\n";
 my $block = "";
@@ -96,18 +106,12 @@ my $line = "";
 my $end_log_pos = 0;
 my $matchfilter = 0;
 
-# db config
-my $db_user = "root";
-my $db_pass = "123456";
-my $db_host = "192.168.3.106";
-my $db_port = 3306;
-my %tb_schema = ();
 
 # 从数据库中获取table的schema信息，赋值给全局变量。避免每条语句都执行，一次性执行获取完
 # 如果有指定表，则获取指定的表的信息即可。
 sub fetch_table_schema {
     my $dbh = DBI->connect("DBI:mysql:database=information_schema;host=$db_host;port=$db_port", "$db_user", "$db_pass") or die "Unable to connect: $DBI::errstr\n";
-    my $sql = "select column_name, table_name from information_schema.columns where table_schema='demo'";
+    my $sql = "select column_name, table_name from information_schema.columns where table_schema='$opt{'d'}'";
     $sql .= " and table_name in(" . (join ',', @tables) . ")" if @tables;
     $sql .= " order by table_name asc, ordinal_position asc";
 
@@ -143,8 +147,6 @@ sub process_sql_block {
         if (@arr == $index + 1 && $flag) {
             $elem =~ s/^\s+|\s+$//g;
             $sql .= $elem;
-            chomp $sql;
-            $sql .= "\n";
             if ($flashback) {
                 &print_flashback_sql($sql);
             }
@@ -153,9 +155,11 @@ sub process_sql_block {
             }
         }
         if ($elem =~ /^\s*(update|delete|insert|create|drop).*/i) {
-            if ($flag) {
-                chomp $sql;
-                $sql .= "\n";
+            # 两种情况：1、flag为true 2、数组只有一条有效记录
+            if ($flag || @arr == 2) {
+                if (@arr == 2) {
+                    $sql .= $elem;
+                }
                 if ($flashback) {
                     &print_flashback_sql($sql);
                 }
@@ -179,7 +183,7 @@ sub process_sql_block {
 
 # 打印正常的sql
 sub print_normal_sql {
-    my ($sql) = @_;
+    my $sql = shift;
     # 按照换行符切割成一个数组，并且去掉前后空格
     my @sql_split = map {(my $s = $_) =~ s/^\s+|\s+$//g;
         $s;} split /\n/, $sql;
@@ -291,7 +295,7 @@ while ($line = <FILE>) {
                 # 去除###
                 $block =~ s/###\s*//g;
                 # 去除后面的/*类型*/
-                $block =~ s/\/\*.*\*\///g;
+                $block =~ s/\s*\/\*.*\*\///g;
                 &process_sql_block($block);
             }
 
