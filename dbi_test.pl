@@ -37,3 +37,7 @@ print Dumper(\%tb_schemas);
 
 $sth->finish();
 $dbh->disconnect();
+
+
+my @arr = qw{A B C D};
+print join ',' , map "'$_'", @arr;

@@ -112,7 +112,7 @@ my $matchfilter = 0;
 sub fetch_table_schema {
     my $dbh = DBI->connect("DBI:mysql:database=information_schema;host=$db_host;port=$db_port", "$db_user", "$db_pass") or die "Unable to connect: $DBI::errstr\n";
     my $sql = "select column_name, table_name from information_schema.columns where table_schema='$opt{'d'}'";
-    $sql .= " and table_name in(" . (join ',', @tables) . ")" if @tables;
+    $sql .= " and table_name in(" . (join ',', map "'$_'", @tables) . ")" if @tables;
     $sql .= " order by table_name asc, ordinal_position asc";
 
     my $sth = $dbh->prepare($sql);
