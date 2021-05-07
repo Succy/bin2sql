@@ -314,6 +314,7 @@ sub print_flashback_sql {
 while ( $line = <FILE> ) {
     if ( $line ne "" ) {
         if (   $line =~ /^\/\*/
+            || $line =~ /ROLLBACK/
             || $line =~ /DELIMITER/
             || $line =~ /SET TIMESTAMP=\d+.+/i
             || $line =~ /SET \@\@SESSION.GTID_NEXT.+/ )
@@ -355,10 +356,7 @@ while ( $line = <FILE> ) {
 
                 # 去除后面的/*类型*/
                 $block =~ s/\s*\/\*.*\*\///g;
-
-                # 方便解析，加多一个换行符
                 chomp $block;
-                $block .= ";\n" . $line;
                 &process_sql_block($block);
             }
             last;
