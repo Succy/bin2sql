@@ -56,8 +56,17 @@ Q：如果表结构发生了变化，能恢复吗？
 
 A：不能，都改表了，你恢复以前的数据有什么意义？就算强行解析出来，可能都错位了或者这个SQL就是有问题的了
 
-
 ## 安装和配置
+
+> github: [https://github.com/Succy/bin2sql](https://github.com/Succy/bin2sql)
+>
+> gitee: [https://gitee.com/succy/bin2sql](https://gitee.com/succy/bin2sql)
+
+### 免安装版本
+
+直接到release下载可执行文件，到Linux系统，添加可执行权限就可以运行了
+
+### 源码安装
 
 首先说明一下，我都是在Linux下测试的，并且也是针对Linux环境开发的，因为Perl语言在很多Linux发行版都内置，我所使用的是CentOS7，内置的Perl是5.16.3，如果想要在Windows下使用，请安装Perl语言环境，并且修改内部的mysqlbinlog为mysqlbinlog.exe（前提是mysqlbinlog.exe在环境变量内）。
 

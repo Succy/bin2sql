@@ -8,12 +8,6 @@
 #
 # ===========================================================================
 
-#====================================
-# todo:
-# 如果当前information_schema删除了某些表，遇到这些表时会获取不到cols
-# 情况1、表都删除了
-# 情况2、表还在，但是表中字段改动了
-#======================================
 use strict;
 use warnings;
 use Getopt::Long qw(:config bundling no_ignore_case);
@@ -94,7 +88,7 @@ my %tb_schema = ();
 my $cmd = qq{mysqlbinlog -vv --base64-output=DECODE-ROWS --skip-gtids -R -u$db_user -h$db_host -P$db_port -p$db_pass};
 
 $cmd .= " --start-position=" . $opt{'start-position'}        if $opt{'start-position'};
-$cmd .= " --stop-position=" . $opt{'stop-position'}          if $opt{'stop-postion'};
+$cmd .= " --stop-position=" . $opt{'stop-position'}          if $opt{'stop-position'};
 $cmd .= " --start-datetime='" . $opt{'start-datetime'} . "'" if $opt{'start-datetime'};
 $cmd .= " --stop-datetime='" . $opt{'stop-datetime'} . "'"   if $opt{'stop-datetime'};
 $cmd .= " --database=" . $opt{'d'}                           if $opt{'d'};
