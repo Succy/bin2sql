@@ -15,17 +15,23 @@ use utf8;
 use 5.016;
 use DBI;
 
+our $VERSION = "1.0.1";
 my %opt = ();
 
 GetOptions(
     \%opt,              'sql-type=s',      'only-dml',         't|tables=s',
     'f|binlog=s',       'help',            'start-datetime=s', 'stop-datetime=s',
     'start-position=i', 'stop-position=i', 'd|databases=s',    'u|user=s',
-    'h|host=s',         'P|port=i',        'p|password:s',     'B|flashback'
+    'h|host=s',         'P|port=i',        'p|password:s',     'B|flashback',
+    'v|version'
 ) || die usage();
 
 sub usage {
-    print 'MySQL Binlog to SQL
+    print <<_EOF_;
+bin2sql Ver $VERSION, for Linux (x86_64).
+Copyright (c) 2021 Succy.
+
+MySQL binlog to SQL and flashback DML SQL tools.
 Options:
     -h, --host=name             Get the binlog from server, default localhost.
     -u, --user=name             Connect to the remote server as username, default root.
@@ -57,14 +63,23 @@ Options:
     --only-dml                  Only print dml sql, optional, default disabled.
     --sql-type                  Sql type you want to process, support INSERT, UPDATE, DELETE.
     -f, --binlog=name           Read from binlog file.
-    --help                      Print help message.';
-    print "\n";
+    -v, --version               Output version information and exit. 
+    --help                      Print help message.
+_EOF_
+
     exit;
 }
 
-if (   ( defined $opt{'help'} && $opt{'help'} )
+# Print version infomation and exit.
+if ( $opt{'v'} ) {
+    print "bin2sql Ver $VERSION, for Linux (x86_64).\n";
+    exit;
+}
+
+if (   $opt{'help'}
     or ( !defined $opt{'f'} || $opt{'f'} eq "" )
-    or ( !defined $opt{'d'} || $opt{'d'} eq "" ) )
+    or ( !defined $opt{'d'} || $opt{'d'} eq "" ) 
+    )
 {
     usage();
 }
